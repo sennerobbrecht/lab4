@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <title>Borden binnen 300 m rond mij</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <style>
+    #map { height: 100vh; }
+  </style>
+</head>
+<body>
+  <h3 style="padding:10px;">
+    Verkeersborden binnen 300 m van mijn locatie
+  </h3>
+  <div id="map"></div>
+
+  <!-- Leaflet & Proj4 -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/proj4@2.8.0/dist/proj4.js"></script>
+  <script>
+    // 1) Init kaart
+    const map = L.map('map').setView([51.02707, 4.48096], 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap-bijdragers'
+    }).addTo(map);
+
+    // 2) CRS-definities
+    proj4.defs("EPSG:4326", "+proj=longlat +datum=WGS84 +no_defs");
+    proj4.defs("EPSG:31370",
+      "+proj=lcc +lat_0=90 +lon_0=4.367486666666667 " +
+      "+lat_1=51.1666672333333 +lat_2=49.8333339 " +
+      "+x_0=150000.013 +y_0=5400088.438 " +
+      "+ellps=intl +towgs84=-106.8686,52.2978,-103.7239,0.3366," +
+      "-0.457,1.8422,-1.2747 +units=m +no_defs"
+    );
+
+    // 3) Live-locatie opvragen
+    map.locate({ setView: false, watch: false, maxZoom: 16 });
+
+    map.on('locationfound', e => {
+      const userLatLng = e.latlng;
+      const accuracy  = e.accuracy;
+      const radius    = 300; // nu 300 m
+
+      // Marker & cirkel van de gebruiker
+      L.marker(userLatLng)
+        .bindPopup(`Jouw locatie<br>±${Math.round(accuracy)} m`)
+        .addTo(map);
+      L.circle(userLatLng, { radius, color:'blue', weight:1 }).addTo(map);
+
+      // 4) Converteer WGS84 → Lambert 72
+      const [userX, userY] = proj4(
+        "EPSG:4326",
+        "EPSG:31370",
+        [userLatLng.lng, userLatLng.lat]
+      );
+
+      // 5) Dynamische bbox ±300 m in Lambert72
+      const minX = userX - radius, minY = userY - radius;
+      const maxX = userX + radius, maxY = userY + radius;
+      const wfsUrl =
+        'https://opendata.apps.mow.vlaanderen.be/opendata-geoserver/awv/wfs?' +
+        'service=WFS&version=1.1.0&request=GetFeature' +
+        '&typeName=awv:Verkeersborden.Vlaanderen_Borden' +
+        '&srsName=EPSG:31370' +
+        '&outputFormat=application/json' +
+        `&bbox=${minX},${minY},${maxX},${maxY},EPSG:31370`;
+
+      // 6) Fetch en plot borden
+      fetch(wfsUrl)
+        .then(r => r.json())
+        .then(data => {
+          data.features.forEach((feat, i) => {
+            const [x, y] = feat.geometry.coordinates;
+            const [lon, lat] = proj4("EPSG:31370","EPSG:4326",[x,y]);
+            const pt = L.latLng(lat, lon);
+
+            if (map.distance(userLatLng, pt) <= radius) {
+              const code = feat.properties.bordcode || 'Onbekend';
+              L.marker(pt)
+                .bindPopup(
+                  `<b>Bord ${i+1}</b><br>` +
+                  `ID: ${feat.properties.BordID || '–'}<br>` +
+                  `Code: ${code}<br>` +
+                  `Afstand: ${Math.round(map.distance(userLatLng, pt))} m`
+                )
+                .addTo(map);
+            }
+          });
+          // 7) Inzoomen op 300 m-cirkel
+          map.fitBounds(userLatLng.toBounds(radius).pad(1.2));
+        })
+        .catch(console.error);
+    });
+
+    map.on('locationerror', err =>
+      console.warn('Locatie niet beschikbaar:', err.message)
+    );
+  </script>
+</body>
+</html>
+
+
+
+
+
+
