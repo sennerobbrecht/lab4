@@ -43,6 +43,7 @@
       cursor: pointer;
       display: none;
       box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      pointer-events: auto;
     }
     #start-route-btn.show { display: block; }
 
@@ -57,12 +58,84 @@
       background: rgba(255,255,255,0.9);
       padding: 8px;
       border-radius: 4px;
+      pointer-events: auto;
+    }
+
+    /* --- extra UI-controls --- */
+    .top-controls, .bottom-panel {
+      position: absolute;
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      pointer-events: none;
+    }
+    .top-controls {
+      top: 10px;
+      padding: 0 10px;
+    }
+    .top-controls .btn {
+      background: rgba(255,255,255,0.9);
+      border-radius: 50%;
+      width: 40px; height: 40px;
+      display: flex; align-items: center; justify-content: center;
+      pointer-events: auto;
+      margin-left: 5px;
+      font-size: 20px;
+    }
+    .speed-display {
+      position: absolute;
+      left: 10px; bottom: 60px;
+      background: rgba(255,255,255,0.9);
+      border-radius: 4px;
+      padding: 5px 8px;
+      pointer-events: auto;
+      font-weight: bold;
+    }
+    .bottom-panel {
+      bottom: 0;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px;
+    }
+    .bottom-panel .route-info {
+      background: rgba(0,0,0,0.7);
+      color: #0f0;
+      font-size: 24px;
+      padding: 5px 10px;
+      border-radius: 4px;
+      pointer-events: auto;
+    }
+    .bottom-panel .route-summary {
+      color: #fff;
+      font-size: 14px;
+      pointer-events: auto;
     }
   </style>
 </head>
 <body>
   <div id="map"></div>
+
+  <!-- originele 'Route starten' knop -->
   <button id="start-route-btn">Route starten</button>
+
+  <!-- extra controls bovenaan -->
+  <div class="top-controls">
+    <div style="flex:1;"></div>
+    <div style="display:flex;">
+      <div class="btn" id="search-btn">🔍</div>
+      <div class="btn" id="sound-btn">🔊</div>
+      <div class="btn" id="north-btn">🧭</div>
+    </div>
+  </div>
+
+  <!-- extra snelheidsweergave linksonder -->
+  <div class="speed-display" id="speed">0 km/u</div>
+
+  <!-- extra route-informatie onderaan -->
+  <div class="bottom-panel">
+    <div class="route-info" id="time"></div>
+    <div class="route-summary" id="summary"></div>
+  </div>
 
   <!-- Libs -->
   <script src="https://unpkg.com/proj4@2.8.0/dist/proj4.js"></script>
@@ -77,6 +150,7 @@
       maxZoom:19, attribution:'&copy; OpenStreetMap'
     }).addTo(map);
 
+    // Proj4 definities
     proj4.defs("EPSG:4326","+proj=longlat +datum=WGS84 +no_defs");
     proj4.defs("EPSG:31370",
       "+proj=lcc +lat_0=90 +lon_0=4.367486666666667 " +
@@ -86,10 +160,22 @@
       "-0.457,1.8422,-1.2747 +units=m +no_defs"
     );
 
-    // 2) Markers & layer
-    const userMarker     = L.circleMarker([0,0],{radius:6,fillColor:'#136AEC',color:'#fff',weight:2,fillOpacity:1}).addTo(map);
-    const accuracyCircle = L.circle([0,0],{radius:0,color:'#136AEC',weight:1,fillColor:'#136AEC',fillOpacity:0.15}).addTo(map);
+    // 2) Markers & layers
+    const userMarker     = L.circleMarker([0,0],{radius:6,fillColor:'#136AEC',color:'#fff',weight:2}).addTo(map);
+    const accuracyCircle = L.circle([0,0],{color:'#136AEC',fillColor:'#136AEC',fillOpacity:0.15}).addTo(map);
     const bordenGroup    = L.layerGroup().addTo(map);
+
+    // extra UI-elementen referenties
+    const startBtn  = document.getElementById('start-route-btn');
+    const timeEl    = document.getElementById('time');
+    const summaryEl = document.getElementById('summary');
+    const speedEl   = document.getElementById('speed');
+    const searchBtn = document.getElementById('search-btn');
+    const soundBtn  = document.getElementById('sound-btn');
+    const northBtn  = document.getElementById('north-btn');
+
+    // 𝗥𝗼𝘁𝗮𝘁𝗶𝗼𝗻 𝗶𝗻𝗶𝘁
+    let rotationAngle = 0;
 
     // 3) Globals
     let routingControl = null,
@@ -97,9 +183,8 @@
         currentDest    = null,
         firstLoad      = true,
         followRoute    = false;
-    const startBtn = document.getElementById('start-route-btn');
 
-    // 4) Geocoder + route tekenen & borden laden
+    // 4) Geocoder + route tekenen
     const geocoder = L.Control.geocoder({
       collapsed:false,
       placeholder:'Voer bestemming in…',
@@ -126,118 +211,162 @@
       }).addTo(map);
 
       routingControl.once('routesfound', evt => {
-        plotSignsAlongRoute(evt.routes[0]).then(() => {
+        const route = evt.routes[0];
+
+        // verkeersborden langs route
+        plotSignsAlongRoute(route).then(() => {
+          // toon start-knop
           startBtn.classList.add('show');
+
+          // update onderpaneel: tijd, afstand, ETA
+          const mins = Math.round(route.summary.totalTime / 60);
+          const km   = (route.summary.totalDistance / 1000).toFixed(0);
+          timeEl.textContent    = `${mins} min`;
+          const eta = new Date(Date.now() + route.summary.totalTime * 1000);
+          summaryEl.textContent = `${km} km · ${eta.getHours()}:${String(eta.getMinutes()).padStart(2,'0')}`;
         });
       });
     });
 
-    // 5) “Route starten” knop — zoom + init follow + hide knop
-    startBtn.addEventListener('click', () => {
-      if (!currentPos) return;
-      followRoute = true;  // zet follow flag aan
-      map.setView(currentPos, 19);  // eerste keer centreren + zoom
-      startBtn.classList.remove('show');  // knop verbergen na starten
+    // knoppen bovenaan
+    searchBtn.addEventListener('click', () => geocoder._toggle());
+    let muted = false;
+    soundBtn.addEventListener('click', () => {
+      muted = !muted;
+      soundBtn.textContent = muted ? '🔇' : '🔊';
     });
 
-    // 6) Live locatie via watchPosition
-    function onPositionUpdate(pos) {
-      const {latitude:lat, longitude:lng, accuracy:acc} = pos.coords;
-      currentPos = L.latLng(lat,lng);
+    // Noord-knop draait de kaart
+    northBtn.addEventListener('click', () => {
+      rotationAngle = (rotationAngle + 90) % 360;
+      const mapEl = document.getElementById('map');
+      mapEl.style.transform = `rotate(${rotationAngle}deg)`;
+      mapEl.style.transformOrigin = '50% 50%';
+    });
+
+    // 5) “Route starten” knop
+    startBtn.addEventListener('click', () => {
+      if (!currentPos) return;
+      followRoute = true;
+      map.setView(currentPos, 19);
+      startBtn.classList.remove('show');
+    });
+
+    // 6) Live locatie + snelheid
+    navigator.geolocation.watchPosition(pos => {
+      const {latitude:lat, longitude:lng, accuracy:acc, speed} = pos.coords;
+      currentPos = L.latLng(lat, lng);
       userMarker.setLatLng(currentPos);
       accuracyCircle.setLatLng(currentPos).setRadius(acc);
+
+      // snelheid in km/u
+      const s = speed != null ? Math.round(speed * 3.6) : 0;
+      speedEl.textContent = `${s} km/u`;
 
       if (firstLoad) {
         map.setView(currentPos, 15);
         firstLoad = false;
       }
 
-      if (!routingControl || !currentDest) {
-        loadAndPlotSigns(currentPos,300);
-      } else {
+      if (routingControl && currentDest) {
         routingControl.setWaypoints([currentPos, currentDest]);
-        routingControl.once('routesfound', ev => plotSignsAlongRoute(ev.routes[0]));
+      } else {
+        loadAndPlotSigns(currentPos, 300);
       }
 
-      // na de eerste recenter, reset followRoute zodat de kaart niet meer verschuift
       if (followRoute) {
+        map.setView(currentPos, map.getZoom());
         followRoute = false;
       }
-    }
-    navigator.geolocation.watchPosition(onPositionUpdate, console.warn, {enableHighAccuracy:true, timeout:10000, maximumAge:0});
+    }, console.warn, {enableHighAccuracy:true, timeout:10000, maximumAge:0});
 
     // 7) Verkeersborden periodiek laden (30s)
     setInterval(() => {
       if (!currentPos) return;
-      if (!routingControl && !currentDest) {
-        loadAndPlotSigns(currentPos,300);
-      } else if (routingControl && currentDest) {
-        routingControl.spliceWaypoints(0,1,currentPos);
+      if (!routingControl) {
+        loadAndPlotSigns(currentPos, 300);
+      } else {
+        routingControl.spliceWaypoints(0, 1, currentPos);
         routingControl.once('routesfound', ev => plotSignsAlongRoute(ev.routes[0]));
       }
-    },30000);
+    }, 30000);
 
-    // 8) Losse GPS‐borden (300 m)
-    function loadAndPlotSigns(latlng,radius){
-      const [ux,uy] = proj4("EPSG:4326","EPSG:31370",[latlng.lng,latlng.lat]);
-      const url = 'https://opendata.apps.mow.vlaanderen.be/opendata-geoserver/awv/wfs?'+
-        'service=WFS&version=1.1.0&request=GetFeature'+
-        '&typeName=awv:Verkeersborden.Vlaanderen_Borden'+
-        '&srsName=EPSG:31370&outputFormat=application/json'+
+    // 8) Functies om losse borden en borden langs route te plotten
+    function loadAndPlotSigns(latlng, radius) {
+      const [ux, uy] = proj4("EPSG:4326","EPSG:31370",[latlng.lng, latlng.lat]);
+      const url =
+        'https://opendata.apps.mow.vlaanderen.be/opendata-geoserver/awv/wfs?' +
+        'service=WFS&version=1.1.0&request=GetFeature' +
+        '&typeName=awv:Verkeersborden.Vlaanderen_Borden' +
+        '&srsName=EPSG:31370&outputFormat=application/json' +
         `&bbox=${ux-radius},${uy-radius},${ux+radius},${uy+radius},EPSG:31370`;
-      fetch(url).then(r=>r.json()).then(data=>{
+      fetch(url).then(r => r.json()).then(data => {
         bordenGroup.clearLayers();
-        data.features.forEach((f,i)=>{
-          const [x,y]=f.geometry.coordinates;
-          const [lng2,lat2]=proj4("EPSG:31370","EPSG:4326",[x,y]);
-          if(map.distance(latlng,[lat2,lng2])<=radius){
-            L.marker([lat2,lng2])
-             .bindPopup(`<b>Bord ${i+1}</b><br>Code: ${f.properties.bordcode||'–'}<br>` +
-                        `Afstand: ${Math.round(map.distance(latlng,[lat2,lng2]))} m`)
-             .addTo(bordenGroup);
+        data.features.forEach((f, i) => {
+          const [x, y] = f.geometry.coordinates;
+          const [lng2, lat2] = proj4("EPSG:31370","EPSG:4326",[x, y]);
+          if (map.distance(latlng, [lat2, lng2]) <= radius) {
+            L.marker([lat2, lng2])
+              .bindPopup(
+                `<b>Bord ${i+1}</b><br>` +
+                `Code: ${f.properties.bordcode||'–'}<br>` +
+                `Afstand: ${Math.round(map.distance(latlng,[lat2,lng2]))} m`
+              )
+              .addTo(bordenGroup);
           }
         });
       }).catch(console.error);
     }
 
-    // 9) Borden langs de route (≤1 km, ≤30 m)
-    function plotSignsAlongRoute(route){
-      return new Promise(resolve=>{
+    function plotSignsAlongRoute(route) {
+      return new Promise(resolve => {
         bordenGroup.clearLayers();
-        const coords=route.coordinates.map(c=>[c.lng,c.lat]);
-        let cumDist=0, sliced=[coords[0]];
-        for(let i=1;i<coords.length;i++){
-          cumDist+=turf.distance(turf.point(coords[i-1]),turf.point(coords[i]),{units:'meters'});
-          if(cumDist>1000) break;
+        const coords = route.coordinates.map(c => [c.lng, c.lat]);
+        let cumDist = 0, sliced = [coords[0]];
+        for (let i = 1; i < coords.length; i++) {
+          cumDist += turf.distance(
+            turf.point(coords[i-1]),
+            turf.point(coords[i]),
+            { units:'meters' }
+          );
+          if (cumDist > 1000) break;
           sliced.push(coords[i]);
         }
-        const line=turf.lineString(sliced);
-        const bbox=turf.bbox(line);
-        const [minX0,minY0]=proj4("EPSG:4326","EPSG:31370",[bbox[0],bbox[1]]);
-        const [maxX0,maxY0]=proj4("EPSG:4326","EPSG:31370",[bbox[2],bbox[3]]);
-        const buf=30;
-        const url='https://opendata.apps.mow.vlaanderen.be/opendata-geoserver/awv/wfs?'+
-          'service=WFS&version=1.1.0&request=GetFeature'+
-          '&typeName=awv:Verkeersborden.Vlaanderen_Borden'+
-          '&srsName=EPSG:31370&outputFormat=application/json'+
+        const line = turf.lineString(sliced);
+        const bbox = turf.bbox(line);
+        const [minX0, minY0] = proj4("EPSG:4326","EPSG:31370",[bbox[0], bbox[1]]);
+        const [maxX0, maxY0] = proj4("EPSG:4326","EPSG:31370",[bbox[2], bbox[3]]);
+        const buf = 30;
+        const url =
+          'https://opendata.apps.mow.vlaanderen.be/opendata-geoserver/awv/wfs?' +
+          'service=WFS&version=1.1.0&request=GetFeature' +
+          '&typeName=awv:Verkeersborden.Vlaanderen_Borden' +
+          '&srsName=EPSG:31370&outputFormat=application/json' +
           `&bbox=${minX0-buf},${minY0-buf},${maxX0+buf},${maxY0+buf},EPSG:31370`;
-        fetch(url)
-          .then(r=>r.json())
-          .then(data=>{
-            data.features.forEach((f,i)=>{
-              const [x,y]=f.geometry.coordinates;
-              const [lng3,lat3]=proj4("EPSG:31370","EPSG:4326",[x,y]);
-              const d=turf.pointToLineDistance(turf.point([lng3,lat3]),line,{units:'meters'});
-              if(d<=30){
-                L.marker([lat3,lng3])
-                 .bindPopup(`<b>Bord ${i+1}</b><br>Code: ${f.properties.bordcode||'–'}<br>`+
-                            `Dist. lijn: ${d.toFixed(0)} m`)
-                 .addTo(bordenGroup);
-              }
-            });
-            resolve();
-          })
-          .catch(err=>{console.error(err); resolve();});
+        fetch(url).then(r => r.json()).then(data => {
+          data.features.forEach((f, i) => {
+            const [x, y] = f.geometry.coordinates;
+            const [lng3, lat3] = proj4("EPSG:31370","EPSG:4326",[x, y]);
+            const d = turf.pointToLineDistance(
+              turf.point([lng3, lat3]),
+              line,
+              { units:'meters' }
+            );
+            if (d <= 20) {
+              L.marker([lat3, lng3])
+                .bindPopup(
+                  `<b>Bord ${i+1}</b><br>` +
+                  `Code: ${f.properties.bordcode||'–'}<br>` +
+                  `Dist. lijn: ${d.toFixed(0)} m`
+                )
+                .addTo(bordenGroup);
+            }
+          });
+          resolve();
+        }).catch(err => {
+          console.error(err);
+          resolve();
+        });
       });
     }
   </script>
