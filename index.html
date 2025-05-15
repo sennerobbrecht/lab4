@@ -2,34 +2,62 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8" />
-  <title>Borden binnen 300 m rond mij</title>
+  <title>Navigatie & verkeersborden</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Leaflet CSS -->
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
   />
+  <!-- Routing Machine CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.css"
+  />
+  <!-- Geocoder CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css"
+  />
+
+  <!-- Turf.js voor punt–lijn afstanden -->
+  <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+
   <style>
-    #map { height: 100vh; }
+    body { margin: 0; }
+    #map { height: 100vh; width: 100vw; }
+    .leaflet-routing-container {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 1000;
+      width: 300px;
+      max-height: 50vh;
+      overflow-y: auto;
+      background: rgba(255,255,255,0.9);
+      padding: 8px;
+      border-radius: 4px;
+    }
   </style>
 </head>
 <body>
-  <h3 style="padding:10px;">
-    Verkeersborden binnen 300 m van mijn locatie
-  </h3>
   <div id="map"></div>
 
-  <!-- Leaflet & Proj4 -->
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Libs -->
   <script src="https://unpkg.com/proj4@2.8.0/dist/proj4.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.js"></script>
+  <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+
   <script>
-    // 1) Init kaart
+    // 1) Init kaart + CRS
     const map = L.map('map').setView([51.02707, 4.48096], 15);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
-      attribution: '&copy; OpenStreetMap-bijdragers'
+      attribution: '&copy; OpenStreetMap'
     }).addTo(map);
 
-    // 2) CRS-definities
     proj4.defs("EPSG:4326", "+proj=longlat +datum=WGS84 +no_defs");
     proj4.defs("EPSG:31370",
       "+proj=lcc +lat_0=90 +lon_0=4.367486666666667 " +
@@ -39,83 +67,153 @@
       "-0.457,1.8422,-1.2747 +units=m +no_defs"
     );
 
-    // 3) Live-locatie opvragen
-    map.locate({ setView: false, watch: false, maxZoom: 16 });
+    // 2) GPS-marker + accuraatheidscirkel + bordenlayer
+    const userMarker     = L.circleMarker([0,0], { radius:6, fillColor:'#136AEC', color:'#fff', weight:2, fillOpacity:1 }).addTo(map);
+    const accuracyCircle = L.circle([0,0],   { radius:0, color:'#136AEC', weight:1, fillColor:'#136AEC', fillOpacity:0.15 }).addTo(map);
+    const bordenGroup    = L.layerGroup().addTo(map);
 
-    map.on('locationfound', e => {
-      const userLatLng = e.latlng;
-      const accuracy  = e.accuracy;
-      const radius    = 300; // nu 300 m
+    // 3) Globals voor routing en bestemming
+    let routingControl = null;
+    let currentPos     = null;
+    let currentDest    = null;
 
-      // Marker & cirkel van de gebruiker
-      L.marker(userLatLng)
-        .bindPopup(`Jouw locatie<br>±${Math.round(accuracy)} m`)
-        .addTo(map);
-      L.circle(userLatLng, { radius, color:'blue', weight:1 }).addTo(map);
+    // 4) Geocoder + route tekenen & borden plotten
+    const geocoder = L.Control.geocoder({
+      collapsed: false,
+      placeholder: 'Voer bestemming in…',
+      defaultMarkGeocode: false,
+      geocoder: L.Control.Geocoder.nominatim()
+    }).addTo(map);
 
-      // 4) Converteer WGS84 → Lambert 72
-      const [userX, userY] = proj4(
-        "EPSG:4326",
-        "EPSG:31370",
-        [userLatLng.lng, userLatLng.lat]
-      );
+    geocoder.on('markgeocode', e => {
+      currentDest = e.geocode.center;
+      bordenGroup.clearLayers();
+      if (routingControl) map.removeControl(routingControl);
 
-      // 5) Dynamische bbox ±300 m in Lambert72
-      const minX = userX - radius, minY = userY - radius;
-      const maxX = userX + radius, maxY = userY + radius;
-      const wfsUrl =
+      // route direct tekenen
+      routingControl = L.Routing.control({
+        waypoints: [currentPos, currentDest],
+        router: L.Routing.osrmv1({ serviceUrl: 'https://router.project-osrm.org/route/v1' }),
+        showAlternatives: false,
+        fitSelectedRoutes: true,
+        routeWhileDragging: false,
+        draggableWaypoints: false,
+        addWaypoints: false,
+        collapsible: true,
+        createMarker: () => null,
+        lineOptions: { styles:[{ weight:4, color:'#136AEC' }] }
+      }).addTo(map);
+
+      routingControl.once('routesfound', evt => {
+        plotSignsAlongRoute(evt.routes[0]);
+      });
+    });
+
+    // 5) Locatie updaten (en borden vernieuwen) elke 30s
+    function updateLocation() {
+      navigator.geolocation.getCurrentPosition(pos => {
+        const { latitude:lat, longitude:lng, accuracy:acc } = pos.coords;
+        currentPos = L.latLng(lat, lng);
+
+        userMarker.setLatLng(currentPos);
+        accuracyCircle.setLatLng(currentPos).setRadius(acc);
+
+        if (!routingControl || !currentDest) {
+          // geen actieve route: losse 300 m-borden
+          loadAndPlotSigns(currentPos, 300);
+        } else {
+          // dynamisch route updaten en borden opnieuw plotten
+          routingControl.setWaypoints([currentPos, currentDest]);
+          routingControl.once('routesfound', ev => {
+            plotSignsAlongRoute(ev.routes[0]);
+          });
+          map.setView(currentPos, map.getZoom());
+        }
+      }, console.warn, { enableHighAccuracy:true, timeout:10000, maximumAge:0 });
+    }
+    // meteen en daarna elke 30s
+    updateLocation();
+    setInterval(updateLocation, 30000);
+
+    // 6) Losse GPS-borden (300 m radius)
+    function loadAndPlotSigns(latlng, radius) {
+      const [ux, uy] = proj4("EPSG:4326","EPSG:31370",[latlng.lng, latlng.lat]);
+      const minX = ux-radius, minY = uy-radius, maxX = ux+radius, maxY = uy+radius;
+      const url =
         'https://opendata.apps.mow.vlaanderen.be/opendata-geoserver/awv/wfs?' +
         'service=WFS&version=1.1.0&request=GetFeature' +
         '&typeName=awv:Verkeersborden.Vlaanderen_Borden' +
-        '&srsName=EPSG:31370' +
-        '&outputFormat=application/json' +
+        '&srsName=EPSG:31370&outputFormat=application/json' +
         `&bbox=${minX},${minY},${maxX},${maxY},EPSG:31370`;
 
-      // 6) Fetch en plot borden
-      fetch(wfsUrl)
-        .then(r => r.json())
-        .then(data => {
-          data.features.forEach((feat, i) => {
-            const [x, y] = feat.geometry.coordinates;
-            const [lon, lat] = proj4("EPSG:31370","EPSG:4326",[x,y]);
-            const pt = L.latLng(lat, lon);
+      fetch(url).then(r => r.json()).then(data => {
+        bordenGroup.clearLayers();
+        data.features.forEach((f,i) => {
+          const [x,y] = f.geometry.coordinates;
+          const [lng2,lat2] = proj4("EPSG:31370","EPSG:4326",[x,y]);
+          if (map.distance(latlng, [lat2,lng2]) <= radius) {
+            L.marker([lat2,lng2])
+             .bindPopup(
+               `<b>Bord ${i+1}</b><br>` +
+               `Code: ${f.properties.bordcode||'–'}<br>` +
+               `Afstand: ${Math.round(map.distance(latlng,[lat2,lng2]))} m`
+             )
+             .addTo(bordenGroup);
+          }
+        });
+      }).catch(console.error);
+    }
 
-            if (map.distance(userLatLng, pt) <= radius) {
-              const code = feat.properties.bordcode || 'Onbekend';
-              L.marker(pt)
-                .bindPopup(
-                  `<b>Bord ${i+1}</b><br>` +
-                  `ID: ${feat.properties.BordID || '–'}<br>` +
-                  `Code: ${code}<br>` +
-                  `Afstand: ${Math.round(map.distance(userLatLng, pt))} m`
-                )
-                .addTo(map);
-            }
-          });
-          // 7) Inzoomen op 300 m-cirkel
-          map.fitBounds(userLatLng.toBounds(radius).pad(1.2));
-        })
-        .catch(console.error);
-    });
+    // 7) Borden langs de route (≤1 km, ≤30 m)
+    function plotSignsAlongRoute(route) {
+      bordenGroup.clearLayers();
 
-    map.on('locationerror', err =>
-      console.warn('Locatie niet beschikbaar:', err.message)
-    );
+      // Turf-coördinaten en afsnijden op 1 km
+      const coords = route.coordinates.map(c => [c.lng, c.lat]);
+      let cumDist = 0, sliced = [coords[0]];
+      for (let i = 1; i < coords.length; i++) {
+        cumDist += turf.distance(turf.point(coords[i-1]), turf.point(coords[i]), { units: 'meters' });
+        if (cumDist > 1000) break;
+        sliced.push(coords[i]);
+      }
+
+      // bbox + 30 m buffer in EPSG:31370
+      const line = turf.lineString(sliced);
+      const [minX0,minY0,maxX0,maxY0] = (() => {
+        const b = turf.bbox(line);
+        return [
+          ...proj4("EPSG:4326","EPSG:31370",[b[0],b[1]]),
+          ...proj4("EPSG:4326","EPSG:31370",[b[2],b[3]])
+        ];
+      })();
+      const buf = 30;
+      const minX = minX0 - buf, minY = minY0 - buf, maxX = maxX0 + buf, maxY = maxY0 + buf;
+
+      const url =
+        'https://opendata.apps.mow.vlaanderen.be/opendata-geoserver/awv/wfs?' +
+        'service=WFS&version=1.1.0&request=GetFeature' +
+        '&typeName=awv:Verkeersborden.Vlaanderen_Borden' +
+        '&srsName=EPSG:31370&outputFormat=application/json' +
+        `&bbox=${minX},${minY},${maxX},${maxY},EPSG:31370`;
+
+      fetch(url).then(r => r.json()).then(data => {
+        data.features.forEach((f,i) => {
+          const [x,y] = f.geometry.coordinates;
+          const [lng3,lat3] = proj4("EPSG:31370","EPSG:4326",[x,y]);
+          const pt = turf.point([lng3,lat3]);
+          const d  = turf.pointToLineDistance(pt, line, { units: 'meters' });
+          if (d <= 30) {
+            L.marker([lat3,lng3])
+             .bindPopup(
+               `<b>Bord ${i+1}</b><br>` +
+               `Code: ${f.properties.bordcode||'–'}<br>` +
+               `Dist. lijn: ${d.toFixed(0)} m`
+             )
+             .addTo(bordenGroup);
+          }
+        });
+      }).catch(console.error);
+    }
   </script>
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
