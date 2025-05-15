@@ -14,6 +14,11 @@
     rel="stylesheet"
     href="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.css"
   />
+  <!-- Leaflet Control Geocoder CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css"
+  />
   <style>
     #map { height: 100vh; margin: 0; padding: 0; }
     body { margin: 0; }
@@ -25,10 +30,11 @@
   </h3>
   <div id="map"></div>
 
-  <!-- Scripts: Proj4, Leaflet, Routing Machine -->
+  <!-- Proj4, Leaflet, Routing Machine & Geocoder -->
   <script src="https://unpkg.com/proj4@2.8.0/dist/proj4.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.js"></script>
+  <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
 
   <script>
     // --- 1) Kaart initialiseren ---
@@ -48,7 +54,7 @@
       "-0.457,1.8422,-1.2747 +units=m +no_defs"
     );
 
-    // --- 3) Marker + cirkel voor locatie ---
+    // --- 3) Marker + cirkel voor live-locatie ---
     const userMarker = L.circleMarker([0,0], {
       radius: 7,
       fillColor: '#136AEC',
@@ -65,22 +71,54 @@
       fillOpacity: 0.15
     }).addTo(map);
 
-    // --- 4) Routing control variabele ---
+    // --- 4) Routing Machine control variabele ---
     let routingControl = null;
 
-    // --- 5) Functie om locatie op te halen via Geolocation API ---
+    // --- 5) Voeg geocoder (adres-zoekbox) toe ---
+    const geocoderControl = L.Control.geocoder({
+      placeholder: 'Zoek een adres…',
+      defaultMarkGeocode: false,
+      geocoder: L.Control.Geocoder.nominatim()
+    })
+    .on('markgeocode', function(e) {
+      const center = e.geocode.center;
+      // update bestemming van de route
+      if (routingControl) {
+        routingControl.spliceWaypoints(1, 1, center);
+      } else {
+        // als nog geen routingControl bestaat, maak 'm meteen
+        routingControl = L.Routing.control({
+          waypoints: [
+            userMarker.getLatLng(),
+            center
+          ],
+          router: L.Routing.osrmv1({
+            serviceUrl: 'https://router.project-osrm.org/route/v1'
+          }),
+          showAlternatives: false,
+          lineOptions: { styles: [{ weight: 4 }] },
+          createMarker: (i, wp) => L.marker(wp.latLng, { draggable: i === 1 })
+        }).addTo(map);
+      }
+      // centreer op bestemming
+      map.setView(center, 15);
+    })
+    .addTo(map);
+
+    // --- 6) Functie om live-locatie op te halen (GPS met goede accuracy) ---
     function changeLocation() {
       console.log('> changeLocation(): nieuwe locatie opvragen…');
       navigator.geolocation.getCurrentPosition(pos => {
         const { latitude: lat, longitude: lng, accuracy } = pos.coords;
         console.log('Location found at', new Date().toLocaleTimeString(),
                     { lat, lng }, 'accuracy:', accuracy, 'm');
-        // negeer als accuracy > 100m
+
+        // negeer slechte fixes
         if (accuracy > 100) {
           console.warn('Overslaan vanwege slechte nauwkeurigheid:', accuracy, 'm');
           return;
         }
-        // trigger Leaflet-event zodat we bestaande handler hergebruiken
+        // vuurt Leaflet-event
         map.fire('locationfound', { latlng: L.latLng(lat,lng), accuracy });
       }, err => {
         console.warn('Geolocation error:', err.message);
@@ -91,21 +129,21 @@
       });
     }
 
-    // --- 6) Handler voor 'locationfound' (marker, borden & routing) ---
+    // --- 7) Handler voor 'locationfound' (marker, cirkel, borden & routing) ---
     map.on('locationfound', e => {
       const { lat, lng } = e.latlng;
       const accuracy    = e.accuracy;
 
-      // update marker en cirkel
+      // update marker & cirkel
       userMarker.setLatLng([lat, lng]);
       accuracyCircle.setLatLng([lat, lng]).setRadius(accuracy);
 
-      // initialiseert routingControl één keer
+      // initialiseer routingControl bij eerste fix
       if (!routingControl) {
         routingControl = L.Routing.control({
           waypoints: [
-            L.latLng(lat, lng),      // startpunt = jouw locatie
-            L.latLng(lat, lng)       // placeholder bestemmingspunt
+            L.latLng(lat, lng), // start = jouw locatie
+            L.latLng(lat, lng)  // placeholder bestemming
           ],
           router: L.Routing.osrmv1({
             serviceUrl: 'https://router.project-osrm.org/route/v1'
@@ -115,16 +153,16 @@
           createMarker: (i, wp) => L.marker(wp.latLng, { draggable: i === 1 })
         }).addTo(map);
 
-        // laat gebruiker klikken om bestemming aan te passen
-        map.on('click', function(evt) {
+        // laat gebruiker klikken om bestemming te kiezen
+        map.on('click', evt => {
           routingControl.spliceWaypoints(1, 1, evt.latlng);
         });
       } else {
-        // update startpunt bij verplaatsing
+        // update alleen startpunt bij verplaatsing
         routingControl.spliceWaypoints(0, 1, L.latLng(lat, lng));
       }
 
-      // ophalen verkeersborden binnen 300 m
+      // Verkeersborden binnen 300 m ophalen
       const radius = 300;
       const [userX, userY] = proj4("EPSG:4326", "EPSG:31370", [lng, lat]);
       const bbox = [
@@ -163,9 +201,9 @@
         .catch(err => console.error('Fout bij WFS:', err));
     });
 
-    // --- 7) Start interval om elke 30 s nieuwe locatie te halen ---
-    changeLocation();                  // eerste keer direct
-    setInterval(changeLocation, 30000); // daarna elke 30s
+    // --- 8) Start periodic updates ---
+    changeLocation();                   // eerste meting
+    setInterval(changeLocation, 30000); // daarna elke 30 s
   </script>
 </body>
 </html>
