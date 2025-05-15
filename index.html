@@ -13,11 +13,19 @@
   <style>
     body { margin: 0; }
     #map { height: 100vh; width: 100vw; }
-    /* Controls container */
+    /* Zoekbalk linksboven */
+    .geocoder-control {
+      position: absolute !important;
+      top: 10px;
+      left: 10px;
+      z-index: 1000;
+      width: 300px;
+    }
+    /* Knoppen rechtsonder */
     #controls {
       position: absolute;
-      top: 10px;
-      right: 10px;
+      bottom: 20px;
+      right: 20px;
       z-index: 1000;
       display: flex;
       flex-direction: column;
@@ -35,7 +43,7 @@
       opacity: 0.5;
       cursor: default;
     }
-    /* Instructions panel */
+    /* Instructies paneel */
     .leaflet-routing-container {
       max-height: 40vh;
       overflow-y: auto;
@@ -45,9 +53,10 @@
 </head>
 <body>
   <div id="map"></div>
-  <!-- Custom Controls -->
+
+  <!-- Knoppencontainer -->
   <div id="controls">
-    <button id="startBtn" disabled>Rit starten</button>
+    <button id="startBtn" style="display:none;">Rit starten</button>
     <button id="stopBtn" style="display:none;">Navigatie stoppen</button>
   </div>
 
@@ -57,7 +66,7 @@
   <script src="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.js"></script>
   <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
   <script>
-    // --- 1) Kaart & CRS ---
+    // 1) Kaart & CRS
     const map = L.map('map').setView([51.02707, 4.48096], 15);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19, attribution: '&copy; OpenStreetMap'
@@ -71,33 +80,37 @@
       "-0.457,1.8422,-1.2747 +units=m +no_defs"
     );
 
-    // --- 2) Locatie marker & cirkel ---
+    // 2) Marker & cirkel
     const userMarker = L.circleMarker([0,0], {
       radius:7, fillColor:'#136AEC', color:'#fff',
-      weight:2, opacity:1, fillOpacity:1
+      weight:2, opacity:1, fillOpacity:0.8
     }).addTo(map);
     const accuracyCircle = L.circle([0,0], {
       radius:0, color:'#136AEC',
-      weight:1, fillColor:'#136AEC', fillOpacity:0.15
+      weight:1, fillColor:'#136AEC', fillOpacity:0.2
     }).addTo(map);
 
-    // --- 3) Variables ---
+    // 3) State
     let routingControl = null;
     let lastLatLng = null;
     let isNavigating = false;
     const startBtn = document.getElementById('startBtn');
     const stopBtn  = document.getElementById('stopBtn');
 
-    // --- 4) Geocoder (adres-zoekvak) ---
+    // 4) Geocoder (linksboven)
     const geocoder = L.Control.geocoder({
-      placeholder: 'Voer een bestemming in…',
+      placeholder: 'Voer bestemming in…',
       defaultMarkGeocode: false,
       geocoder: L.Control.Geocoder.nominatim()
-    })
-    .on('markgeocode', e => {
+    }).addTo(map);
+    // Verplaats geocoder in eigen container
+    const geoEl = document.querySelector('.leaflet-control-geocoder');
+    geoEl.classList.add('geocoder-control');
+
+    geocoder.on('markgeocode', e => {
       const dest = e.geocode.center;
       if (!lastLatLng) {
-        alert('Wachten op je locatie…');
+        alert('Even wachten op je locatie…');
         return;
       }
       // Maak of update route
@@ -113,38 +126,41 @@
           draggableWaypoints: false,
           addWaypoints: false,
           collapsible: true,
-          createMarker: () => null,       // geen extra markers
+          createMarker: () => null,
           lineOptions: { styles:[{ weight:4 }] }
         }).addTo(map);
       }
-      // Toon route-oversicht
+      // Nadat route gevonden is: overzicht tonen en startknop aanzetten
       routingControl.once('routesfound', evt => {
         const route = evt.routes[0];
         map.fitBounds(route.bounds);
-        startBtn.disabled = false;
+        startBtn.style.display = 'block';
       });
-    })
-    .addTo(map);
+    });
 
-    // --- 5) Locatie ophalen & event afvuren ---
+    // 5) Locatie ophalen
     function updateLocation() {
       navigator.geolocation.getCurrentPosition(pos => {
         const { latitude: lat, longitude: lng, accuracy } = pos.coords;
         if (accuracy > 100) return;
         lastLatLng = L.latLng(lat, lng);
-        map.fire('locationfound', { latlng:lastLatLng, accuracy });
-      }, ()=>{}, { enableHighAccuracy:true, timeout:10000, maximumAge:0 });
+        map.fire('locationfound', { latlng: lastLatLng, accuracy });
+      }, ()=>{}, {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0
+      });
     }
 
-    // --- 6) locationfound handler (marker, borden, volgen) ---
+    // 6) locationfound handler
     map.on('locationfound', e => {
       const { lat, lng } = e.latlng;
       const acc = e.accuracy;
       userMarker.setLatLng([lat, lng]);
       accuracyCircle.setLatLng([lat, lng]).setRadius(acc);
 
-      // Verkeersborden
-      const r=300;
+      // Borden ophalen (300 m)
+      const r = 300;
       const [x,y] = proj4("EPSG:4326","EPSG:31370",[lng,lat]);
       const bbox = [x-r,y-r,x+r,y+r].join(',');
       fetch(
@@ -160,48 +176,46 @@
         const fg=L.featureGroup();
         data.features.forEach((f,i)=>{
           const [bx,by]=f.geometry.coordinates;
-          const [lonn, latt ]=proj4("EPSG:31370","EPSG:4326",[bx,by]);
+          const [lonn,latt]=proj4("EPSG:31370","EPSG:4326",[bx,by]);
           const pt=L.latLng(latt,lonn);
-          if(map.distance([lat,lng],pt)<=r){
-            L.marker(pt).addTo(fg);
-          }
+          if(map.distance([lat,lng],pt)<=r) L.marker(pt).addTo(fg);
         });
         fg.addTo(map);
-        map._bordGroup=fg;
+        map._bordGroup = fg;
       });
-      // Volgen als navigatie loopt
-      if(isNavigating){
+
+      // Tijdens navigatie de kaart laten volgen
+      if (isNavigating) {
         const z = map.getZoom();
         map.setView([lat,lng], z);
       }
     });
 
-    // --- 7) Start/Stop knoppen ---
+    // 7) Start/Stop functionaliteit
     startBtn.onclick = () => {
       if (!routingControl) return;
       isNavigating = true;
       startBtn.style.display = 'none';
-      stopBtn.style.display  = '';
-      // zelfde zoom als Google Maps
+      stopBtn.style.display  = 'block';
       map.setZoom(17);
     };
     stopBtn.onclick = () => {
       isNavigating = false;
-      stopBtn.style.display = 'none';
-      startBtn.style.display = 'none';
-      // route verwijderen
+      stopBtn.style.display  = 'none';
+      // route en instructies weghalen
       map.removeControl(routingControl);
       routingControl = null;
-      geocoder.getContainer().style.display = '';
-      startBtn.disabled = true;
+      // knop terug verbergen
+      startBtn.style.display = 'none';
     };
 
-    // --- 8) Begin updates ---
+    // 8) Beginnen met locatie-updates
     updateLocation();
     setInterval(updateLocation, 30000);
   </script>
 </body>
 </html>
+
 
 
 
