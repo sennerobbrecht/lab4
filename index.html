@@ -2,68 +2,34 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8" />
-  <title>Navigatie met live-locatie</title>
+  <title>Borden binnen 300 m rond mij</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- Leaflet -->
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
   />
-  <!-- Routing Machine -->
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.css"
-  />
-  <!-- Geocoder -->
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css"
-  />
   <style>
-    body { margin: 0; }
-    #map { height: 100vh; width: 100vw; }
-    /* Controls onderin */
-    #controls {
-      position: absolute;
-      bottom: 20px;
-      right: 20px;
-      z-index: 1000;
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-    }
-    #controls button {
-      padding: 8px 12px;
-      background: white;
-      border: 1px solid #ccc;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 14px;
-    }
-    #controls button:disabled { opacity: 0.5; cursor: default; }
-    /* Paneel instructies */
-    .leaflet-routing-container { max-height: 40vh; overflow-y: auto; font-size: 14px; }
+    #map { height: 100vh; }
   </style>
 </head>
 <body>
+  <h3 style="padding:10px;">
+    Verkeersborden binnen 300 m van mijn locatie
+  </h3>
   <div id="map"></div>
-  <div id="controls">
-    <button id="startBtn" style="display:none;">Rit starten</button>
-    <button id="stopBtn"  style="display:none;">Navigatie stoppen</button>
-  </div>
 
-  <script src="https://unpkg.com/proj4@2.8.0/dist/proj4.js"></script>
+  <!-- Leaflet & Proj4 -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.js"></script>
-  <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+  <script src="https://unpkg.com/proj4@2.8.0/dist/proj4.js"></script>
   <script>
-    // --- 1) Kaart & CRS ---
+    // 1) Init kaart
     const map = L.map('map').setView([51.02707, 4.48096], 15);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
-      attribution: '&copy; OpenStreetMap'
+      attribution: '&copy; OpenStreetMap-bijdragers'
     }).addTo(map);
 
+    // 2) CRS-definities
     proj4.defs("EPSG:4326", "+proj=longlat +datum=WGS84 +no_defs");
     proj4.defs("EPSG:31370",
       "+proj=lcc +lat_0=90 +lon_0=4.367486666666667 " +
@@ -73,155 +39,68 @@
       "-0.457,1.8422,-1.2747 +units=m +no_defs"
     );
 
-    // --- 2) Live-locatie marker + cirkel ---
-    const userMarker = L.circleMarker([0,0], {
-      radius: 7, fillColor: '#136AEC', color: '#fff',
-      weight: 2, opacity: 1, fillOpacity: 0.8
-    }).addTo(map);
-    const accuracyCircle = L.circle([0,0], {
-      radius: 0, color: '#136AEC',
-      weight: 1, fillColor: '#136AEC', fillOpacity: 0.2
-    }).addTo(map);
+    // 3) Live-locatie opvragen
+    map.locate({ setView: false, watch: false, maxZoom: 16 });
 
-    // --- 3) State + controls ---
-    let lastLatLng = null;
-    let routingControl = null;
-    let isNavigating = false;
-
-    const startBtn = document.getElementById('startBtn');
-    const stopBtn  = document.getElementById('stopBtn');
-
-    // --- 4) Geocoder (adres-zoekvak, NIET auto-marker) ---
-    const geocoder = L.Control.geocoder({
-      collapsed: false,
-      placeholder: 'Voer bestemming in…',
-      defaultMarkGeocode: false,
-      geocoder: L.Control.Geocoder.nominatim()
-    }).addTo(map);
-
-    // Marker voor bestemming
-    let destMarker = null;
-
-    geocoder.on('markgeocode', e => {
-      const dest = e.geocode.center;
-
-      // plaats of verplaats de bestemming-marker
-      if (destMarker) {
-        destMarker.setLatLng(dest);
-      } else {
-        destMarker = L.marker(dest).addTo(map);
-      }
-
-      if (!lastLatLng) {
-        alert('Wacht even op je locatie…');
-        return;
-      }
-
-      // Route maken of updaten
-      if (routingControl) {
-        routingControl.setWaypoints([ lastLatLng, dest ]);
-      } else {
-        routingControl = L.Routing.control({
-          waypoints: [ lastLatLng, dest ],
-          router: L.Routing.osrmv1({
-            serviceUrl: 'https://router.project-osrm.org/route/v1'
-          }),
-          lineOptions: { styles: [{ weight: 4 }] },
-          routeWhileDragging: false,
-          draggableWaypoints: false,
-          addWaypoints: false,
-          showAlternatives: false,
-          fitSelectedRoutes: true,
-          collapsible: true,
-          createMarker: () => null
-        }).addTo(map);
-      }
-
-      // Zodra de route geladen is: zoom & toon start-knop
-      routingControl.once('routesfound', evt => {
-        map.fitBounds(evt.routes[0].bounds);
-        startBtn.style.display = 'block';
-      });
-    });
-
-    // --- 5) Locatie ophalen via Geolocation API ---
-    function updateLocation() {
-      navigator.geolocation.getCurrentPosition(pos => {
-        const { latitude: lat, longitude: lng, accuracy } = pos.coords;
-        if (accuracy > 100) return; // te onnauwkeurig
-        lastLatLng = L.latLng(lat, lng);
-        map.fire('locationfound', { latlng: lastLatLng, accuracy });
-      }, err => {
-        console.warn('Geolocation error:', err.message);
-      }, {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0
-      });
-    }
-
-    // --- 6) Marker, cirkel & verkeersborden bij locatiefound ---
     map.on('locationfound', e => {
-      const { lat, lng } = e.latlng;
-      const accuracy    = e.accuracy;
+      const userLatLng = e.latlng;
+      const accuracy  = e.accuracy;
+      const radius    = 300; // nu 300 m
 
-      userMarker.setLatLng([lat, lng]);
-      accuracyCircle.setLatLng([lat, lng]).setRadius(accuracy);
+      // Marker & cirkel van de gebruiker
+      L.marker(userLatLng)
+        .bindPopup(`Jouw locatie<br>±${Math.round(accuracy)} m`)
+        .addTo(map);
+      L.circle(userLatLng, { radius, color:'blue', weight:1 }).addTo(map);
 
-      // Verkeersborden binnen 300 m
-      const r = 300;
-      const [x, y] = proj4("EPSG:4326","EPSG:31370",[lng,lat]);
-      const bbox = [x-r,y-r,x+r,y+r].join(',');
-      fetch(
+      // 4) Converteer WGS84 → Lambert 72
+      const [userX, userY] = proj4(
+        "EPSG:4326",
+        "EPSG:31370",
+        [userLatLng.lng, userLatLng.lat]
+      );
+
+      // 5) Dynamische bbox ±300 m in Lambert72
+      const minX = userX - radius, minY = userY - radius;
+      const maxX = userX + radius, maxY = userY + radius;
+      const wfsUrl =
         'https://opendata.apps.mow.vlaanderen.be/opendata-geoserver/awv/wfs?' +
         'service=WFS&version=1.1.0&request=GetFeature' +
         '&typeName=awv:Verkeersborden.Vlaanderen_Borden' +
-        '&srsName=EPSG:31370&outputFormat=application/json' +
-        `&bbox=${bbox},EPSG:31370`
-      )
-      .then(r=>r.json())
-      .then(data=>{
-        if (map._bordGroup) map.removeLayer(map._bordGroup);
-        const fg = L.featureGroup();
-        data.features.forEach(f => {
-          const [bx, by] = f.geometry.coordinates;
-          const [lon2, lat2] = proj4("EPSG:31370","EPSG:4326",[bx,by]);
-          const pt = L.latLng(lat2, lon2);
-          if (map.distance([lat,lng], pt) <= r) {
-            L.marker(pt).addTo(fg);
-          }
-        });
-        fg.addTo(map);
-        map._bordGroup = fg;
-      });
+        '&srsName=EPSG:31370' +
+        '&outputFormat=application/json' +
+        `&bbox=${minX},${minY},${maxX},${maxY},EPSG:31370`;
 
-      // Volgen tijdens navigatie
-      if (isNavigating) {
-        map.setView([lat,lng], map.getZoom());
-      }
+      // 6) Fetch en plot borden
+      fetch(wfsUrl)
+        .then(r => r.json())
+        .then(data => {
+          data.features.forEach((feat, i) => {
+            const [x, y] = feat.geometry.coordinates;
+            const [lon, lat] = proj4("EPSG:31370","EPSG:4326",[x,y]);
+            const pt = L.latLng(lat, lon);
+
+            if (map.distance(userLatLng, pt) <= radius) {
+              const code = feat.properties.bordcode || 'Onbekend';
+              L.marker(pt)
+                .bindPopup(
+                  `<b>Bord ${i+1}</b><br>` +
+                  `ID: ${feat.properties.BordID || '–'}<br>` +
+                  `Code: ${code}<br>` +
+                  `Afstand: ${Math.round(map.distance(userLatLng, pt))} m`
+                )
+                .addTo(map);
+            }
+          });
+          // 7) Inzoomen op 300 m-cirkel
+          map.fitBounds(userLatLng.toBounds(radius).pad(1.2));
+        })
+        .catch(console.error);
     });
 
-    // --- 7) Start/stop navigatie knoppen ---
-    startBtn.onclick = () => {
-      if (!routingControl) return;
-      isNavigating = true;
-      startBtn.style.display = 'none';
-      stopBtn.style.display  = 'block';
-      map.setZoom(17);
-    };
-    stopBtn.onclick = () => {
-      isNavigating = false;
-      stopBtn.style.display  = 'none';
-      map.removeControl(routingControl);
-      routingControl = null;
-      startBtn.style.display = 'none';
-      if (destMarker) map.removeLayer(destMarker);
-      destMarker = null;
-    };
-
-    // --- 8) Begin met locatie-updates ---
-    updateLocation();
-    setInterval(updateLocation, 30000);
+    map.on('locationerror', err =>
+      console.warn('Locatie niet beschikbaar:', err.message)
+    );
   </script>
 </body>
 </html>
