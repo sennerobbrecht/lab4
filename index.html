@@ -13,14 +13,6 @@
   <style>
     body { margin: 0; }
     #map { height: 100vh; width: 100vw; }
-    /* Zoekbalk linksboven */
-    .geocoder-control {
-      position: absolute !important;
-      top: 10px;
-      left: 10px;
-      z-index: 1000;
-      width: 300px;
-    }
     /* Knoppen rechtsonder */
     #controls {
       position: absolute;
@@ -54,7 +46,6 @@
 <body>
   <div id="map"></div>
 
-  <!-- Knoppencontainer -->
   <div id="controls">
     <button id="startBtn" style="display:none;">Rit starten</button>
     <button id="stopBtn" style="display:none;">Navigatie stoppen</button>
@@ -97,15 +88,27 @@
     const startBtn = document.getElementById('startBtn');
     const stopBtn  = document.getElementById('stopBtn');
 
-    // 4) Geocoder (linksboven)
+    // 4) Geocoder (altijd uitgeklapt) 
     const geocoder = L.Control.geocoder({
+      collapsed: false,
       placeholder: 'Voer bestemming in…',
       defaultMarkGeocode: false,
       geocoder: L.Control.Geocoder.nominatim()
     }).addTo(map);
-    // Verplaats geocoder in eigen container
-    const geoEl = document.querySelector('.leaflet-control-geocoder');
-    geoEl.classList.add('geocoder-control');
+
+    // Enter-toets afvangen
+    const geocoderInput = document.querySelector('.leaflet-control-geocoder-form input');
+    geocoderInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const query = this.value;
+        geocoder.options.geocoder.geocode(query, results => {
+          if (results && results.length > 0) {
+            geocoder.fire('markgeocode', { geocode: results[0] });
+          }
+        });
+      }
+    });
 
     geocoder.on('markgeocode', e => {
       const dest = e.geocode.center;
@@ -113,7 +116,7 @@
         alert('Even wachten op je locatie…');
         return;
       }
-      // Maak of update route
+      // route maken of updaten
       if (routingControl) {
         routingControl.setWaypoints([ lastLatLng, dest ]);
       } else {
@@ -130,10 +133,9 @@
           lineOptions: { styles:[{ weight:4 }] }
         }).addTo(map);
       }
-      // Nadat route gevonden is: overzicht tonen en startknop aanzetten
+      // na route-berekening: overzicht & startknop tonen
       routingControl.once('routesfound', evt => {
-        const route = evt.routes[0];
-        map.fitBounds(route.bounds);
+        map.fitBounds(evt.routes[0].bounds);
         startBtn.style.display = 'block';
       });
     });
@@ -159,8 +161,8 @@
       userMarker.setLatLng([lat, lng]);
       accuracyCircle.setLatLng([lat, lng]).setRadius(acc);
 
-      // Borden ophalen (300 m)
-      const r = 300;
+      // verkeersborden
+      const r=300;
       const [x,y] = proj4("EPSG:4326","EPSG:31370",[lng,lat]);
       const bbox = [x-r,y-r,x+r,y+r].join(',');
       fetch(
@@ -174,7 +176,7 @@
       .then(data=>{
         if(map._bordGroup) map.removeLayer(map._bordGroup);
         const fg=L.featureGroup();
-        data.features.forEach((f,i)=>{
+        data.features.forEach(f=>{
           const [bx,by]=f.geometry.coordinates;
           const [lonn,latt]=proj4("EPSG:31370","EPSG:4326",[bx,by]);
           const pt=L.latLng(latt,lonn);
@@ -184,14 +186,13 @@
         map._bordGroup = fg;
       });
 
-      // Tijdens navigatie de kaart laten volgen
+      // kaart volgen tijdens navigatie
       if (isNavigating) {
-        const z = map.getZoom();
-        map.setView([lat,lng], z);
+        map.setView([lat,lng], map.getZoom());
       }
     });
 
-    // 7) Start/Stop functionaliteit
+    // 7) Start/Stop knoppen
     startBtn.onclick = () => {
       if (!routingControl) return;
       isNavigating = true;
@@ -202,10 +203,8 @@
     stopBtn.onclick = () => {
       isNavigating = false;
       stopBtn.style.display  = 'none';
-      // route en instructies weghalen
       map.removeControl(routingControl);
       routingControl = null;
-      // knop terug verbergen
       startBtn.style.display = 'none';
     };
 
@@ -215,6 +214,8 @@
   </script>
 </body>
 </html>
+
+
 
 
 
