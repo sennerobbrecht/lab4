@@ -22,6 +22,11 @@
   <style>
     #map { height: 100vh; margin: 0; padding: 0; }
     body { margin: 0; }
+    .leaflet-routing-container { /* maak de instructie-panel gescheiden */
+      width: 300px;
+      max-height: 50vh;
+      overflow-y: auto;
+    }
   </style>
 </head>
 <body>
@@ -30,21 +35,21 @@
   </h3>
   <div id="map"></div>
 
-  <!-- Proj4, Leaflet, Routing Machine & Geocoder -->
+  <!-- Scripts: Proj4, Leaflet, Routing Machine & Geocoder -->
   <script src="https://unpkg.com/proj4@2.8.0/dist/proj4.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.js"></script>
   <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
 
   <script>
-    // --- 1) Kaart initialiseren ---
+    // 1) Kaart initialiseren
     const map = L.map('map').setView([51.02707, 4.48096], 15);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap-bijdragers'
     }).addTo(map);
 
-    // --- 2) CRS-definities voor projecties ---
+    // 2) CRS-definities
     proj4.defs("EPSG:4326", "+proj=longlat +datum=WGS84 +no_defs");
     proj4.defs("EPSG:31370",
       "+proj=lcc +lat_0=90 +lon_0=4.367486666666667 " +
@@ -54,7 +59,7 @@
       "-0.457,1.8422,-1.2747 +units=m +no_defs"
     );
 
-    // --- 3) Marker + cirkel voor live-locatie ---
+    // 3) Marker + cirkel voor live-locatie
     const userMarker = L.circleMarker([0,0], {
       radius: 7,
       fillColor: '#136AEC',
@@ -71,55 +76,64 @@
       fillOpacity: 0.15
     }).addTo(map);
 
-    // --- 4) Routing Machine control variabele ---
+    // 4) Variabelen voor routing en laatste positie
     let routingControl = null;
+    let lastLatLng = null;
 
-    // --- 5) Voeg geocoder (adres-zoekbox) toe ---
+    // 5) Voeg geocoder (adres-zoekbox) toe
     const geocoderControl = L.Control.geocoder({
-      placeholder: 'Zoek een adres…',
+      placeholder: 'Voer een adres in...',
       defaultMarkGeocode: false,
       geocoder: L.Control.Geocoder.nominatim()
     })
     .on('markgeocode', function(e) {
-      const center = e.geocode.center;
-      // update bestemming van de route
+      const dest = e.geocode.center;
+
+      if (!lastLatLng) {
+        alert('Wachten op uw locatie…');
+        return;
+      }
+
+      // Als er al een route is, vervang alleen de bestemming
       if (routingControl) {
-        routingControl.spliceWaypoints(1, 1, center);
+        routingControl.setWaypoints([ lastLatLng, dest ]);
       } else {
-        // als nog geen routingControl bestaat, maak 'm meteen
+        // Maak routingControl aan met start en bestemming
         routingControl = L.Routing.control({
-          waypoints: [
-            userMarker.getLatLng(),
-            center
-          ],
+          waypoints: [ lastLatLng, dest ],
           router: L.Routing.osrmv1({
             serviceUrl: 'https://router.project-osrm.org/route/v1'
           }),
           showAlternatives: false,
-          lineOptions: { styles: [{ weight: 4 }] },
-          createMarker: (i, wp) => L.marker(wp.latLng, { draggable: i === 1 })
+          fitSelectedRoutes: true,
+          routeWhileDragging: false,
+          draggableWaypoints: false,
+          addWaypoints: false,
+          collapsible: true,
+          lineOptions: { styles: [{ weight: 4 }] }
         }).addTo(map);
       }
+
       // centreer op bestemming
-      map.setView(center, 15);
+      map.setView(dest, 15);
     })
     .addTo(map);
 
-    // --- 6) Functie om live-locatie op te halen (GPS met goede accuracy) ---
+    // 6) Functie om live-locatie op te halen
     function changeLocation() {
-      console.log('> changeLocation(): nieuwe locatie opvragen…');
       navigator.geolocation.getCurrentPosition(pos => {
         const { latitude: lat, longitude: lng, accuracy } = pos.coords;
-        console.log('Location found at', new Date().toLocaleTimeString(),
-                    { lat, lng }, 'accuracy:', accuracy, 'm');
 
-        // negeer slechte fixes
+        // negeer onbetrouwbare fixes
         if (accuracy > 100) {
-          console.warn('Overslaan vanwege slechte nauwkeurigheid:', accuracy, 'm');
+          console.warn('Slechte nauwkeurigheid:', accuracy, 'm — overslaan');
           return;
         }
-        // vuurt Leaflet-event
-        map.fire('locationfound', { latlng: L.latLng(lat,lng), accuracy });
+
+        lastLatLng = L.latLng(lat, lng);
+
+        // trigger Leaflet-event
+        map.fire('locationfound', { latlng: lastLatLng, accuracy });
       }, err => {
         console.warn('Geolocation error:', err.message);
       }, {
@@ -129,38 +143,13 @@
       });
     }
 
-    // --- 7) Handler voor 'locationfound' (marker, cirkel, borden & routing) ---
+    // 7) Handler voor 'locationfound' (marker, cirkel & borden)
     map.on('locationfound', e => {
       const { lat, lng } = e.latlng;
       const accuracy    = e.accuracy;
 
-      // update marker & cirkel
       userMarker.setLatLng([lat, lng]);
       accuracyCircle.setLatLng([lat, lng]).setRadius(accuracy);
-
-      // initialiseer routingControl bij eerste fix
-      if (!routingControl) {
-        routingControl = L.Routing.control({
-          waypoints: [
-            L.latLng(lat, lng), // start = jouw locatie
-            L.latLng(lat, lng)  // placeholder bestemming
-          ],
-          router: L.Routing.osrmv1({
-            serviceUrl: 'https://router.project-osrm.org/route/v1'
-          }),
-          showAlternatives: false,
-          lineOptions: { styles: [{ weight: 4 }] },
-          createMarker: (i, wp) => L.marker(wp.latLng, { draggable: i === 1 })
-        }).addTo(map);
-
-        // laat gebruiker klikken om bestemming te kiezen
-        map.on('click', evt => {
-          routingControl.spliceWaypoints(1, 1, evt.latlng);
-        });
-      } else {
-        // update alleen startpunt bij verplaatsing
-        routingControl.spliceWaypoints(0, 1, L.latLng(lat, lng));
-      }
 
       // Verkeersborden binnen 300 m ophalen
       const radius = 300;
@@ -181,11 +170,11 @@
         .then(data => {
           if (map._bordGroup) map.removeLayer(map._bordGroup);
           const fg = L.featureGroup();
-          data.features.forEach((feat, i) => {
-            const [x, y] = feat.geometry.coordinates;
-            const [lon2, lat2] = proj4("EPSG:31370","EPSG:4326",[x,y]);
+          data.features.forEach((feat,i) => {
+            const [x,y] = feat.geometry.coordinates;
+            const [lon2,lat2] = proj4("EPSG:31370","EPSG:4326",[x,y]);
             const pt = L.latLng(lat2, lon2);
-            if (map.distance([lat, lng], pt) <= radius) {
+            if (map.distance([lat,lng], pt) <= radius) {
               const code = feat.properties.bordcode || 'Onbekend';
               L.marker(pt).bindPopup(
                 `<b>Bord ${i+1}</b><br>` +
@@ -201,7 +190,11 @@
         .catch(err => console.error('Fout bij WFS:', err));
     });
 
-    // --- 8) Start periodic updates ---
+    map.on('locationerror', err =>
+      console.warn('Locatie niet beschikbaar:', err.message)
+    );
+
+    // 8) Start updates
     changeLocation();                   // eerste meting
     setInterval(changeLocation, 30000); // daarna elke 30 s
   </script>
